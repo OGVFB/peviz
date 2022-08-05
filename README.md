@@ -29,7 +29,9 @@ This project involves some poorly/non annotated genomes/transcriptomes
   - https://github.com/GMOD/jbrowse-plugin-msaview 
     - jbrowse2 plugin....and jbrowseR package can display in Shiny
     - not certain if I can get msaview into Shiny via jbrowseR....
-  
+  - http://bioconductor.org/packages/release/bioc/html/DECIPHER.html
+    - http://www2.decipher.codes/Gallery.html
+    
 # Workflow?:
 
 1. Input gene name and for non-"reference" genomes the GFF(s)
