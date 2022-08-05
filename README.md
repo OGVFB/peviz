@@ -20,6 +20,9 @@ This project involves some poorly/non annotated genomes/transcriptomes
     - Can't use standard geoms? 
   - http://www.bioinf.jku.at/software/msa/
     - MSA visualization done with Tex  
+  - https://github.com/mhahsler/rBLAST/
+    - R interface for blast
+    - blast itself needs to be installed
 
 # Workflow?:
 
@@ -32,5 +35,17 @@ This project involves some poorly/non annotated genomes/transcriptomes
 7. Produce report:
   - MSA + protein domains
   - Phylogenetic tree
+
+# Notes:
+UniProt domain info for a protein:
+  - https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/reference_proteomes/Eukaryota/UP000000226/UP000000226_3885_additional.dat.gz
+  - The protein domain info starts with `#FT`
+  - Probably programmatically extract this info
+
+UniProtKB (curated):
+  - https://www.uniprot.org/help/downloads
+  - https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
+  - above only about 90mb
+
 
 
