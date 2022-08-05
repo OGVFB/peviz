@@ -18,12 +18,18 @@ This project involves some poorly/non annotated genomes/transcriptomes
   - http://yulab-smu.top/ggmsa/index.html
     - "gg" like visualization
     - Can't use standard geoms? 
+    - VERY slow and odd plot result (vertically squished) with large protein (Abca4; over 2000 AA)
   - http://www.bioinf.jku.at/software/msa/
-    - MSA visualization done with Tex  
+    - MSA visualization done with LaTex
+    - challenging to get in a Shiny / reactive environment as output is either pdf or Tex code
   - https://github.com/mhahsler/rBLAST/
     - R interface for blast
     - blast itself needs to be installed
-
+  - https://github.com/vragh/seqvisr
+  - https://github.com/GMOD/jbrowse-plugin-msaview 
+    - jbrowse2 plugin....and jbrowseR package can display in Shiny
+    - not certain if I can get msaview into Shiny via jbrowseR....
+  
 # Workflow?:
 
 1. Input gene name and for non-"reference" genomes the GFF(s)
