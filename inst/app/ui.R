@@ -5,10 +5,15 @@ ui <- fluidPage(
   # App title ----
   titlePanel("peviz"),
 
-  sidebarLayout(
+  fluidPage(
 
-    sidebarPanel(
-
+    fluidRow(width = 8,
+      selectInput(inputId = 'Database',
+                  label = 'Database:',
+                  selected = 'Swiss-Prot',
+                  choices = c('Swiss-Prot', 'Local Fasta')),
+      conditionalPanel(condition = "input.Database == 'Local Fasta'",
+                       fileInput('local_fasta', 'Local Fasta', multiple = FALSE)),
       selectizeInput(inputId = "uniprot",
                      label = "Select proteins:",
                      choices=NULL,
@@ -26,9 +31,10 @@ ui <- fluidPage(
                    style='background-color: #3269FF; color: #ffffff')
 
     ),
+    br(), br(),
 
-    mainPanel(width = 10,
-              plotOutput("msa"),
+    fluidRow(width = 11,
+              plotOutput("msa", height = "auto"),
               plotOutput("tree")
     )
   )
