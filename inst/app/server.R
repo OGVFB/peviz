@@ -10,7 +10,7 @@ library(ggplot2)
 # extract protein names
 # proteins <- uniprotDB@ranges %>% data.frame() %>% as_tibble(rownames = 'index') %>%
 #   mutate(org = stringr::str_extract(names, 'OS.*OX') %>% gsub('OS\\=| OX','',.),
-#          gene = gsub('\\w+\\|\\w+\\|','', names) %>% gsub(' .*','',.)) %>%
+#          gene = gsub('\\w+\\|\\w+\\|','', names) %>% gsub('_.*','',.)) %>%
 #   rowwise() %>%
 #   mutate(id = stringr::str_split(names, '\\|| ')[[1]][2]) %>%
 #   ungroup()
@@ -52,7 +52,7 @@ server <- function(input, output, session) {
     # extract msa order
     order <- unmasked(msa_align) %>% data.frame() %>% row.names()
     org_order <- stringr::str_extract(order, 'OS.*OX') %>% gsub('OS\\=| OX','',.)
-    gene_order <- stringr::str_split(order, '\\|| ') %>% purrr::map(3) %>% unlist()
+    gene_order <- stringr::str_split(order, '\\|| ') %>% purrr::map(3) %>% unlist() %>% gsub('_.*','',.)
     id_order <- stringr::str_split(order, '\\|| ')%>% purrr::map(2) %>% unlist()
     order_full <- paste(org_order, gene_order, id_order, sep = ' | ')
 
