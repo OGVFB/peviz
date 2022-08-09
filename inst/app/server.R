@@ -12,7 +12,8 @@ library(ggplot2)
 #   mutate(org = stringr::str_extract(names, 'OS.*OX') %>% gsub('OS\\=| OX','',.),
 #          gene = gsub('\\w+\\|\\w+\\|','', names) %>% gsub(' .*','',.)) %>%
 #   rowwise() %>%
-#   mutate(id = stringr::str_split(names, '\\|| ')[[1]][2])
+#   mutate(id = stringr::str_split(names, '\\|| ')[[1]][2]) %>%
+#   ungroup()
 # save(proteins, uniprotDB, file = 'inst/app/data/peviz_uniprot_data.Rdata', compress = FALSE)
 load('./data/peviz_uniprot_data.Rdata')
 
@@ -29,11 +30,11 @@ server <- function(input, output, session) {
                            server = TRUE)
     }
     observeEvent(input$uniprot, {
-        updateSelectizeInput(session, 'primary_protein',
-                             choices = input$uniprot,
-                             options = list(placeholder = 'Optional'),
-                             selected = '',
-                             server = TRUE)
+      updateSelectizeInput(session, 'primary_protein',
+                           choices = input$uniprot,
+                           options = list(placeholder = 'Optional'),
+                           selected = '',
+                           server = TRUE)
     })
   })
 
@@ -59,7 +60,7 @@ server <- function(input, output, session) {
     if (input$primary_protein != ''){
       cat(input$primary_protein)
       selected_protein <- stringr::str_split(input$primary_protein,
-                                    '\\|')[[1]][2]
+                                             '\\|')[[1]][2]
 
       requestURL <- paste0("https://www.ebi.ac.uk/proteins/api/features?offset=0&size=-1&accession=", selected_protein)
       r <- GET(requestURL, accept("application/json"))
