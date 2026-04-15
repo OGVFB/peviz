@@ -1,0 +1,35 @@
+Package: peviz
+Title: Protein Evolution Visualization
+Version: 0.1
+Authors@R: 
+    person(given = "David",
+           family = "McGaughey",
+           role = c("aut", "cre"),
+           email = "mcgaughey@gmail.com",
+           comment=c(ORCID="0000-0002-9224-2888"))
+Description: Shiny reactive app to display protein multiple sequence alignment (MSA) from UniProt data. Data from UniProt is pulled via their API. Local UniProt fasta can be used if internet is not available.
+License: CC0
+Imports:
+  ape,
+  Biostrings,
+  data.table,
+  dplyr,
+  DT,
+  ggforce,
+  ggmsa,
+  ggplot2,
+  ggtree,
+  httr,
+  jsonlite,
+  magrittr,
+  msa,
+  purrr,
+  seqinr,
+  shiny,
+  stringr,
+  tidyr
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+URL: https://github.com/davemcg/peviz
+BugReports: https://github.com/davemcg/peviz/issues
+RoxygenNote: 7.3.2

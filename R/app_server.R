@@ -1,71 +1,115 @@
-library(shiny)
-library(msa)
-library(dplyr)
-library(httr)
-library(jsonlite)
-library(xml2)
-library(ggplot2)
+#' The application server-side
+#'
+#' @import shiny
+#' @import dplyr
+#' @import ggplot2
+#' @import msa
+#' @importFrom DT renderDT datatable renderDataTable
+#' @importFrom data.table fread
+#' @importFrom httr GET stop_for_status content accept
+#' @importFrom jsonlite fromJSON toJSON
+#' @importFrom Biostrings readAAStringSet AAStringSet unmasked
+#' @importFrom stringr str_split
+#' @importFrom purrr map2
+#' @importFrom tidyr unnest
+#' @importFrom ggmsa tidy_msa
+#' @importFrom ggforce facet_col
+#' @importFrom ape nj
+#' @importFrom seqinr dist.alignment write.fasta
+#' @importFrom ggtree ggtree geom_tiplab
+#' @importFrom utils URLencode
+#' @importFrom stats na.omit
+#' @noRd
+app_server <- function(input, output, session) {
 
-options(shiny.maxRequestSize = 5000 * 1024^2)
-# ---- HELPER FUNCTIONS ----
-parse_uniprot_names <- function(seq_names) {
-  purrr::map_chr(seq_names, function(nm) {
-    if (nm %in% c("Consensus", " Sequence Numbering")) return(nm)
+  options(shiny.maxRequestSize = 5000 * 1024^2)
 
-    parts <- stringr::str_split(nm, '\\|| ')[[1]]
+  # --- REACTIVE VALUES FOR API SEARCH ----
+  api_db_val <- reactiveVal(list(uniprotDB = NULL, proteins = NULL))
+  api_search_results <- reactiveVal(NULL)
 
-    if (length(parts) >= 3) {
-      org <- stringr::str_extract(nm, 'OS.*OX')
-      org <- if (!is.na(org)) gsub('OS\\=| OX', '', org) else "Unknown"
+  # --- UNIPROT SEARCH LOGIC ----
+  observeEvent(input$search_api, {
+    req(input$api_query)
 
-      gene <- gsub('_.*', '', parts[3])
-      id <- parts[2]
-      return(paste(org, gene, id, sep = ' | '))
-    } else {
-      return(nm)
-    }
-  })
-}
+    query <- URLencode(input$api_query)
+    url <- paste0("https://rest.uniprot.org/uniprotkb/search?query=", query,
+                  "&format=tsv&fields=accession,id,gene_names,protein_name,organism_name,length&size=500")
 
-format_positions <- function(df) {
-  df %>% mutate(
-    group = substr(formatC(position, width = 5, format = "d", flag = "0"), 1, 3),
-    Position = substr(formatC(position, width = 5, format = "d", flag = "0"), 4, 5)
-  )
-}
+    showNotification("Searching UniProt...", id = "uniprot_search", duration = NULL)
 
-# Safely flattens nested lists from jsonlite without losing row counts (preventing length mismatches)
-clean_list_col <- function(x, extract_col = NULL) {
-  if (is.list(x)) {
-    sapply(x, function(v) {
-      if (is.null(v) || length(v) == 0) return(NA_character_)
-
-      # If the nested element is a dataframe (common in EBI API for clinical significance)
-      if (is.data.frame(v)) {
-        if (!is.null(extract_col) && extract_col %in% names(v)) {
-          return(paste(v[[extract_col]], collapse = ", "))
-        } else {
-          return(paste(v[[1]], collapse = ", "))
-        }
-      }
-
-      # Standard nested vector
-      paste(v, collapse = ", ")
+    tryCatch({
+      df <- data.table::fread(url, stringsAsFactors = FALSE)
+      api_search_results(df)
+      removeNotification("uniprot_search")
+    }, error = function(e) {
+      removeNotification("uniprot_search")
+      showNotification(paste("Search failed:", e$message), type = "error")
+      api_search_results(NULL)
     })
-  } else {
-    as.character(x)
-  }
-}
+  })
 
-# ---- server ----
-server <- function(input, output, session) {
+  output$api_results_table <- DT::renderDT({
+    req(api_search_results())
+    DT::datatable(api_search_results(), selection = 'multiple',
+                  options = list(pageLength = 5, scrollX = TRUE))
+  })
+
+  # --- FETCH SELECTED SEQUENCES FROM API ----
+  observeEvent(input$fetch_api_seqs, {
+    req(api_search_results())
+    selected_rows <- input$api_results_table_rows_selected
+
+    if (length(selected_rows) == 0) {
+      showNotification("Please select at least one row from the table.", type = "warning")
+      return()
+    }
+
+    acc_col <- if ("Entry" %in% names(api_search_results())) "Entry" else names(api_search_results())[1]
+    selected_accessions <- api_search_results()[[acc_col]][selected_rows]
+
+    showNotification("Downloading FASTA sequences...", id = "fetch_seqs", duration = NULL)
+
+    tryCatch({
+      query_string <- paste0("accession:", paste(selected_accessions, collapse = "+OR+accession:"))
+      fasta_url <- paste0("https://rest.uniprot.org/uniprotkb/stream?format=fasta&query=", query_string)
+
+      r <- httr::GET(fasta_url)
+      httr::stop_for_status(r)
+      fasta_text <- httr::content(r, as = "text", encoding = "UTF-8")
+
+      tmp_fasta <- tempfile(fileext = ".fasta")
+      writeLines(fasta_text, tmp_fasta)
+
+      uniprotDB <- Biostrings::readAAStringSet(tmp_fasta)
+
+      proteins <- uniprotDB@ranges %>% data.frame() %>% as_tibble(rownames = 'index') %>%
+        mutate(names_formatted = parse_uniprot_names(names)) %>%
+        rowwise() %>%
+        mutate(id = stringr::str_split(names, '\\|| ')[[1]][2]) %>%
+        ungroup()
+
+      api_db_val(list(uniprotDB = uniprotDB, proteins = proteins))
+      updateSelectizeInput(session, 'uniprot', choices = proteins$names, selected = proteins$names, server = TRUE)
+
+      removeNotification("fetch_seqs")
+      showNotification("Sequences loaded successfully!", type = "message")
+
+    }, error = function(e) {
+      removeNotification("fetch_seqs")
+      showNotification(paste("Failed to fetch FASTA:", e$message), type = "error")
+    })
+  })
 
   # --- DATABASE LOAD ----
   db <- reactive({
     req(input$Database)
     if (input$Database == 'Swiss-Prot'){
-      load('./data/peviz_uniprot_data.Rdata')
-    } else {
+      # Update path to look in the package installation directory
+      data_path <- system.file("extdata", "peviz_uniprot_data.Rdata", package = "peviz")
+      load(data_path)
+      return(list(uniprotDB = uniprotDB, proteins = proteins))
+    } else if (input$Database == 'Local UniProt Fasta') {
       req(input$local_fasta)
       datapath <- input$local_fasta$datapath
       if (tools::file_ext(datapath) == 'gz') {
@@ -79,8 +123,12 @@ server <- function(input, output, session) {
         rowwise() %>%
         mutate(id = stringr::str_split(names, '\\|| ')[[1]][2]) %>%
         ungroup()
+
+      return(list(uniprotDB = uniprotDB, proteins = proteins))
+    } else if (input$Database == 'UniProt API Search') {
+      req(api_db_val()$uniprotDB)
+      return(api_db_val())
     }
-    list(uniprotDB = uniprotDB, proteins = proteins)
   })
 
   # --- DYNAMIC UI UPDATES ----
@@ -88,10 +136,13 @@ server <- function(input, output, session) {
     query <- parseQueryString(session$clientData$url_search)
     if (is.null(query[['uniprot']])){
       req(input$Database)
-      updateSelectizeInput(session, 'uniprot', choices = db()$proteins$names, server = TRUE)
+      if (input$Database != 'UniProt API Search') {
+        updateSelectizeInput(session, 'uniprot', choices = db()$proteins$names, server = TRUE)
+      }
     }
     if (is.null(query[['color']])){
-      valid_colors <- colnames(ggmsa:::scheme_AA)[colnames(ggmsa:::scheme_AA) != 'CN6']
+      scheme_AA <- utils::getFromNamespace("scheme_AA", "ggmsa")
+      valid_colors <- colnames(scheme_AA)[colnames(scheme_AA) != 'CN6']
       updateSelectizeInput(session, 'color', choices = valid_colors, selected = 'Chemistry_AA')
     }
   })
@@ -111,13 +162,12 @@ server <- function(input, output, session) {
 
     # 1. Fetch Standard Features
     req_url <- paste0("https://www.ebi.ac.uk/proteins/api/features?offset=0&size=-1&accession=", selected_protein)
-    r_feat <- GET(req_url, accept("application/json"))
+    r_feat <- httr::GET(req_url, httr::accept("application/json"))
 
     if (r_feat$status_code != 200) return(NULL)
-    feat_data <- fromJSON(toJSON(content(r_feat)))$features[[1]]
+    feat_data <- jsonlite::fromJSON(jsonlite::toJSON(httr::content(r_feat)))$features[[1]]
 
     if (!is.null(feat_data) && nrow(feat_data) > 0 && "category" %in% names(feat_data)) {
-      # Remove variants from the first API to prevent double-dipping
       features <- feat_data %>% filter(toupper(type) != 'VARIANT', toupper(category) != 'VARIANTS')
 
       if ("category" %in% names(features)) features$category <- clean_list_col(features$category)
@@ -127,15 +177,15 @@ server <- function(input, output, session) {
       features <- data.frame()
     }
 
-    # 2. Fetch Detailed Variations (ONLY IF CHECKBOX IS SELECTED)
+    # 2. Fetch Detailed Variations
     variants <- data.frame()
 
     if (input$fetch_variants) {
       var_url <- paste0("https://www.ebi.ac.uk/proteins/api/variation?offset=0&size=-1&accession=", selected_protein)
-      r_var <- GET(var_url, accept("application/json"))
+      r_var <- httr::GET(var_url, httr::accept("application/json"))
 
       if (r_var$status_code == 200) {
-        var_data <- fromJSON(toJSON(content(r_var)))$features[[1]]
+        var_data <- jsonlite::fromJSON(jsonlite::toJSON(httr::content(r_var)))$features[[1]]
         if (!is.null(var_data) && nrow(var_data) > 0) {
           variants <- var_data
 
@@ -185,8 +235,9 @@ server <- function(input, output, session) {
     req(input$uniprot)
     indi <- db()$proteins %>% filter(names %in% input$uniprot) %>% pull(index) %>% as.integer()
 
-    color_pick <- ggmsa:::scheme_AA[, input$color]
-    names(color_pick) <- row.names(ggmsa:::scheme_AA)
+    scheme_AA <- utils::getFromNamespace("scheme_AA", "ggmsa")
+    color_pick <- scheme_AA[, input$color]
+    names(color_pick) <- row.names(scheme_AA)
     is_single_seq <- length(indi) == 1
 
     if (is_single_seq) {
@@ -196,8 +247,8 @@ server <- function(input, output, session) {
       fasta_out <- tibble(names = names(seqs), fasta = as.character(seqs))
     } else {
       msa_align <- msa(db()$uniprotDB[indi], method = input$method)
-      order_full <- c('Consensus', parse_uniprot_names(names(unmasked(msa_align))))
-      consensus <- AAStringSet(x = gsub("?", "X", msaConsensusSequence(msa_align), fixed = TRUE))
+      order_full <- c('Consensus', parse_uniprot_names(names(Biostrings::unmasked(msa_align))))
+      consensus <- Biostrings::AAStringSet(x = gsub("?", "X", msaConsensusSequence(msa_align), fixed = TRUE))
       names(consensus) <- 'Consensus'
       all_seqs <- c(msa_align@unmasked, consensus)
       tidy_msa_df <- ggmsa::tidy_msa(all_seqs)
@@ -229,7 +280,6 @@ server <- function(input, output, session) {
       variant_features <- features %>% filter(toupper(type) == "VARIANT")
       standard_features <- features %>% filter(toupper(type) != "VARIANT")
 
-      # 1. Process Standard Annotations (Expanded across ranges)
       if (nrow(standard_features) > 0) {
         expand_seq <- standard_features %>%
           mutate(
@@ -253,7 +303,6 @@ server <- function(input, output, session) {
           select(Protein, position, character)
       }
 
-      # 2. Process Variant Annotations (Locked to Origin Position)
       if (nrow(variant_features) > 0) {
         if (!"clinical" %in% names(variant_features)) {
           variant_features$clinical <- "Unknown"
@@ -285,23 +334,19 @@ server <- function(input, output, session) {
       has_valid_annotations <- nrow(select_protein_aa) > 0 || nrow(variant_counts) > 0
     }
 
-    # Format positions and compile initial data
     plot_data <- format_positions(tidy_msa_df) %>%
       mutate(Type = 'Amino Acid') %>%
       left_join(db()$proteins[indi, ], by = c('name' = 'names')) %>%
       mutate(Protein = parse_uniprot_names(name)) %>%
       rename(AA = character)
 
-    # Inject standard annotations
     if (nrow(select_protein_aa) > 0) {
       order_full <- c(order_full, unique(select_protein_aa$Protein))
       annot_data <- format_positions(select_protein_aa %>% mutate(Type = 'UniProt Annotation')) %>% rename(AA = character)
       plot_data <- bind_rows(plot_data, annot_data)
     }
 
-    # Inject variant tracks
     if (nrow(variant_counts) > 0) {
-      # Add variants to the factor ordering (Pathogenic first, then other)
       var_levels <- c("Variants (Pathogenic)", "Variants (Other)")
       var_levels_present <- intersect(var_levels, unique(variant_counts$Protein))
       order_full <- c(order_full, var_levels_present)
@@ -310,7 +355,6 @@ server <- function(input, output, session) {
       plot_data <- bind_rows(plot_data, var_data)
     }
 
-    # Inject Position Track
     pos_track <- plot_data %>%
       filter(Type == 'Amino Acid') %>%
       select(position, group, Position, ref_pos, is_aa) %>%
