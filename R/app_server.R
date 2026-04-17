@@ -105,7 +105,6 @@ app_server <- function(input, output, session) {
   db <- reactive({
     req(input$Database)
     if (input$Database == 'Swiss-Prot'){
-      # Update path to look in the package installation directory
       data_path <- system.file("extdata", "peviz_uniprot_data.Rdata", package = "peviz")
       load(data_path)
       return(list(uniprotDB = uniprotDB, proteins = proteins))
@@ -299,7 +298,7 @@ app_server <- function(input, output, session) {
           filter(is_aa) %>%
           left_join(expand_seq, by = c('true_seq' = 'seq'), relationship = "many-to-many") %>%
           filter(!is.na(evidences), evidences != 'NULL') %>%
-          mutate(Protein = paste0(type, ': ', description), character = '^') %>%
+          mutate(Protein = paste0(type, ': ', description), character = NA_character_) %>%
           select(Protein, position, character)
       }
 
@@ -315,34 +314,47 @@ app_server <- function(input, output, session) {
           distinct() %>%
           mutate(is_pathogenic = grepl("pathogenic", tolower(clinical)))
 
-        variant_counts <- tidy_msa_df %>%
+        # Capture sequence true positions to fill gaps
+        seq_positions <- tidy_msa_df %>%
           filter(name == input$primary_protein) %>%
           arrange(position) %>%
           mutate(is_aa = character != "-", true_seq = cumsum(is_aa)) %>%
           filter(is_aa) %>%
+          select(position, true_seq)
+
+        sparse_counts <- seq_positions %>%
           left_join(clean_variants, by = c('true_seq' = 'begin_num'), relationship = "many-to-many") %>%
           filter(!is.na(description)) %>%
           group_by(position, is_pathogenic) %>%
           summarise(count = n(), .groups = 'drop') %>%
           mutate(
-            Protein = if_else(is_pathogenic, "Variants (Pathogenic)", "Variants (Other)"),
-            character = as.character(count)
+            Protein = if_else(is_pathogenic, "Variants (Pathogenic)", "Variants (Other)")
+          )
+
+        if (nrow(sparse_counts) > 0) {
+          variant_counts <- expand.grid(
+            position = unique(seq_positions$position),
+            Protein = unique(sparse_counts$Protein),
+            stringsAsFactors = FALSE
           ) %>%
-          select(Protein, position, character)
+            left_join(sparse_counts, by = c("position", "Protein")) %>%
+            mutate(count = if_else(is.na(count), 0, count), character = as.character(count)) %>%
+            select(Protein, position, character, count)
+        }
       }
 
       has_valid_annotations <- nrow(select_protein_aa) > 0 || nrow(variant_counts) > 0
     }
 
     plot_data <- format_positions(tidy_msa_df) %>%
-      mutate(Type = 'Amino Acid') %>%
+      mutate(Type = 'Amino Acid', count = NA_real_) %>%
       left_join(db()$proteins[indi, ], by = c('name' = 'names')) %>%
       mutate(Protein = parse_uniprot_names(name)) %>%
       rename(AA = character)
 
     if (nrow(select_protein_aa) > 0) {
       order_full <- c(order_full, unique(select_protein_aa$Protein))
-      annot_data <- format_positions(select_protein_aa %>% mutate(Type = 'UniProt Annotation')) %>% rename(AA = character)
+      annot_data <- format_positions(select_protein_aa %>% mutate(Type = 'UniProt Annotation', count = NA_real_)) %>% rename(AA = character)
       plot_data <- bind_rows(plot_data, annot_data)
     }
 
@@ -351,7 +363,7 @@ app_server <- function(input, output, session) {
       var_levels_present <- intersect(var_levels, unique(variant_counts$Protein))
       order_full <- c(order_full, var_levels_present)
 
-      var_data <- format_positions(variant_counts %>% mutate(Type = 'UniProt Annotation')) %>% rename(AA = character)
+      var_data <- format_positions(variant_counts %>% mutate(Type = 'Variant')) %>% rename(AA = character)
       plot_data <- bind_rows(plot_data, var_data)
     }
 
@@ -360,18 +372,48 @@ app_server <- function(input, output, session) {
       select(position, group, Position, ref_pos, is_aa) %>%
       distinct() %>%
       mutate(
-        Protein = ' Sequence Numbering', Type = 'Amino Acid', AA = NA,
+        Protein = ' Sequence Numbering', Type = 'Amino Acid', AA = NA, count = NA_real_,
         pos_label = if_else(!is.na(ref_pos) & ref_pos %% 10 == 0 & is_aa, as.character(ref_pos), "")
       )
 
+    # 1. Map Proteins to continuous numbers for the Y-Axis offset
     plot_data <- bind_rows(plot_data %>% mutate(pos_label = NA), pos_track) %>%
-      mutate(Protein = factor(Protein, levels = rev(order_full)))
+      mutate(
+        Protein = factor(Protein, levels = rev(order_full)),
+        Protein_num = as.numeric(Protein)
+      ) %>%
+      # 2. Get global maximum to properly scale the sparkline height across all facets uniformly
+      group_by(Protein) %>%
+      mutate(
+        valid_count_global = if_else(Type == 'Variant', count, NA_real_),
+        has_variants_global = any(!is.na(valid_count_global)),
+        max_count_global = if_else(has_variants_global, max(valid_count_global, na.rm = TRUE), 1),
+        max_count_global = if_else(max_count_global == 0, 1, max_count_global)
+      ) %>%
+      # 3. Compute Local max and min PER ROW (facet group) to place points and labels
+      group_by(Protein, group) %>%
+      mutate(
+        valid_count_local = if_else(Type == 'Variant', count, NA_real_),
+        has_variants_local = any(!is.na(valid_count_local)),
+        local_max = if_else(has_variants_local, max(valid_count_local, na.rm = TRUE), -1),
+        local_min = if_else(has_variants_local, min(valid_count_local, na.rm = TRUE), -1),
+
+        # Determine actual continuous coordinate
+        spark_y = if_else(Type == 'Variant' & !is.na(count), Protein_num - 0.4 + (count / max_count_global) * 0.8, NA_real_),
+
+        # Use cumsum to safely grab exactly the FIRST instance of the min and max (prevents multi-label crowding)
+        is_max = Type == 'Variant' & !is.na(count) & count == local_max & local_max > 0 & cumsum(!is.na(count) & count == local_max) == 1,
+        is_min = Type == 'Variant' & !is.na(count) & count == local_min & local_max > 0 & cumsum(!is.na(count) & count == local_min) == 1
+      ) %>%
+      # Clean up computation cols
+      select(-starts_with("valid_count"), -starts_with("has_variants"), -max_count_global, -local_max, -local_min) %>%
+      ungroup()
 
     # --- PLOTTING ----
     multiplier <- if(is_single_seq) 80 else if(has_valid_annotations) 35 else 25
     height <- nrow(unique(select(plot_data, group, Protein))) * multiplier
 
-    base_plot <- ggplot(plot_data, aes(x = Position, y = Protein))
+    base_plot <- ggplot(plot_data, aes(x = Position, y = Protein_num))
     if (has_valid_annotations) {
       base_plot <- base_plot + ggforce::facet_col(~ group + Type, scales = 'free_y', space = 'free')
     } else {
@@ -383,11 +425,31 @@ app_server <- function(input, output, session) {
     axis_label <- paste("Reference numbering:", clean_ref)
 
     plot <- base_plot +
-      geom_raster(aes(fill = AA), data = filter(plot_data, Protein != ' Sequence Numbering')) +
-      geom_text(aes(label = AA), data = filter(plot_data, Protein != ' Sequence Numbering')) +
+      # Amino Acids
+      geom_raster(aes(fill = AA), data = filter(plot_data, Type == 'Amino Acid' & Protein != ' Sequence Numbering')) +
+      geom_text(aes(label = AA), data = filter(plot_data, Type == 'Amino Acid' & Protein != ' Sequence Numbering')) +
+
+      # UniProt Standard Annotations (Tile with reduced height to separate rows)
+      geom_tile(fill = "black", height = 0.5, data = filter(plot_data, Type == 'UniProt Annotation')) +
+
+      # Sequence numbering
       geom_text(aes(label = pos_label), data = filter(plot_data, Protein == ' Sequence Numbering'), size = 3.5, fontface = "bold") +
+
+      # Variant Sparklines ONLY
+      geom_line(aes(y = spark_y, group = Protein), data = filter(plot_data, Type == 'Variant'), color = "grey30", linewidth = 0.6) +
+
+      # Max markers & labels
+      geom_point(aes(y = spark_y), data = filter(plot_data, Type == 'Variant' & is_max), color = "red", size = 2) +
+      geom_text(aes(y = spark_y, label = count), data = filter(plot_data, Type == 'Variant' & is_max), color = "red", size = 3, vjust = -0.8, fontface = "bold") +
+
+      # Min markers & labels
+      geom_point(aes(y = spark_y), data = filter(plot_data, Type == 'Variant' & is_min), color = "blue", size = 2) +
+      geom_text(aes(y = spark_y, label = count), data = filter(plot_data, Type == 'Variant' & is_min), color = "blue", size = 3, vjust = 1.8, fontface = "bold") +
+
       scale_fill_manual(values = color_pick, na.value = "transparent", na.translate = FALSE) +
-      labs(x = axis_label) +
+      # Adding generous expand padding unclips the labels from the top/bottom boundary limits
+      scale_y_continuous(breaks = seq_along(levels(plot_data$Protein)), labels = levels(plot_data$Protein), expand = expansion(add = 0.8)) +
+      labs(x = axis_label, y = NULL) +
       theme_minimal() +
       theme(panel.grid = element_blank(), axis.text.x = element_blank(), axis.ticks.x = element_blank(),
             strip.background = element_blank(), strip.text = element_blank())
